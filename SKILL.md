@@ -226,6 +226,9 @@ State: `~/.redteam/campaigns/<target>/undercroft-state.json`.
 
 ## Relations
 
+- `barbican` — THE FIRST LAYER (v1.1.0): operator-protection synthesizer — vantage, identity, artifacts, trail, timeline, cleanup. Runs BEFORE every engagement; 3AM's pacing inherits its timeline layer; zero-document gate enforced by it.
+
+
 - `holyshit-mode` — recon + recipe canon; feeds the undercroft map.
 - `3am-shinjitsu` — parallel sweep; BLOCKED verdicts hand UNDERCROFT the walls;
   UNDERCROFT's crafted vectors grow 3AM's matrix via learn→promote.
