@@ -912,7 +912,11 @@ def cmd_run(args):
                 ok = code_ == 200
                 print(f"    id={pid.strip()}: {code_}" + ("  ← ACCEPTED" if ok else ""))
                 if ok:
-                    logic.append({"seam": f"boundary read (id={pid.strip()})",
+                    seam_name = f"boundary read (id={pid.strip()})"
+                    if any(l.get("seam") == seam_name for l in logic):
+                        print("    · already registered — skipping (dedupe)")
+                        continue
+                    logic.append({"seam": seam_name,
                                   "where": args.boundary_url, "status": "CONFIRMED",
                                   "proof": f"GET {u} → 200 ({len(body)}B)",
                                   "delta": "read-only id swap",
