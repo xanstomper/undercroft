@@ -173,7 +173,8 @@ def cmd_verify(args):
                               capture_output=True, text=True).stdout
     for want in ("code", "surface", "logic", "craft", "probe", "fuzz",
                  "drift", "prioritize", "export", "report", "verify",
-                 "scan", "stateflow", "replay", "precision", "entropy", "corpus"):
+                 "scan", "stateflow", "replay", "precision", "entropy", "corpus",
+                 "map", "descend"):
         if want not in help_out:
             bad.append(f"subcommand {want}")
     tmpl = Path(__file__).resolve().parent.parent / "templates" / "undercroft-state.json"
@@ -438,12 +439,12 @@ def _iter_sources(path):
             yield f
 
 
-def cmd_scan(args):
-    """Static seam scanner: bundles/source → undercroft seams (read-only, local)."""
+def _scan_findings(path):
+    """Static seam scan over bundles/source. Returns findings list."""
     import re as _re
     compiled = [(seam, desc, _re.compile(rx)) for seam, desc, rx in SCAN_PATTERNS]
     findings = []
-    for f in _iter_sources(args.path):
+    for f in _iter_sources(path):
         try:
             text = f.read_text(errors="replace")
         except Exception:
@@ -455,6 +456,12 @@ def cmd_scan(args):
                     findings.append({"file": str(f), "line": lineno, "seam": seam,
                                      "desc": desc, "match": line.strip()[:110],
                                      "at": datetime.now(timezone.utc).isoformat()})
+    return findings
+
+
+def cmd_scan(args):
+    """Static seam scanner: bundles/source → undercroft seams (read-only, local)."""
+    findings = _scan_findings(args.path)
     by_seam = {}
     for x in findings:
         by_seam.setdefault(x["seam"], []).append(x)
@@ -656,6 +663,123 @@ def cmd_corpus(args):
     return 0
 
 
+# ── v2.2.0 domain maps + the descend loop ─────────────────────────────────────
+
+DOMAIN_MAP = {
+    "e-commerce": [("state", "checkout flow states", "cart→paid→fulfilled handlers"),
+                   ("webhook", "payment callback idempotency", "webhook handler"),
+                   ("precision", "refund/partial-math", "refund endpoint math"),
+                   ("arbitrage", "price/quote inconsistency", "pricing/quote endpoints"),
+                   ("entitlement", "coupon stacking", "cart apply endpoint"),
+                   ("bounds", "quantity/input validation", "cart/order inputs"),
+                   ("concurrency", "inventory decrement race", "checkout reserve"),
+                   ("boundary", "multi-seller tenant reads", "seller-scoped endpoints")],
+    "fintech": [("precision", "fee/interest math", "fee calculation"),
+                ("conversion", "FX asymmetry", "conversion endpoint"),
+                ("journal", "ledger/statement integrity", "statements + journal"),
+                ("concurrency", "double-spend", "transfer/withdraw endpoints"),
+                ("bounds", "withdrawal limits", "withdraw validation"),
+                ("state", "transaction state machine", "txn workflow"),
+                ("webhook", "idempotency keys", "payment callbacks"),
+                ("randomness", "OTP entropy", "auth/OTP delivery")],
+    "saas": [("boundary", "plan/seat limits", "seat & quota endpoints"),
+             ("entitlement", "seat/feature inflation", "invites & feature gates"),
+             ("precision", "proration math", "plan-change math"),
+             ("time", "trial/TTL logic", "trial expiry checks"),
+             ("state", "subscription workflow", "sub state machine"),
+             ("journal", "usage metering", "metering pipeline")],
+    "booking": [("concurrency", "double-book race", "reserve endpoint"),
+                ("state", "booking state machine", "booking workflow"),
+                ("time", "cancellation windows", "cancel/refund policy"),
+                ("boundary", "cross-org reads", "org-scoped queries"),
+                ("precision", "proration/refund math", "cancellation math"),
+                ("journal", "void counting", "booking ledger")],
+    "social": [("credits", "rate/credit economies", "boosts/credits"),
+               ("entitlement", "referral loops", "referral handler"),
+               ("boundary", "workspace/org reads", "scoped queries"),
+               ("state", "moderation workflow", "report flow"),
+               ("randomness", "matchmaking/feed", "assignment logic"),
+               ("webhook", "fanout replay", "integration callbacks")],
+    "gaming": [("randomness", "RNG structure", "outcome engine"),
+               ("entitlement", "loot/bonus flows", "reward handlers"),
+               ("precision", "odds/payout math", "shipped odds tables"),
+               ("credits", "currency economy", "shop/wallet"),
+               ("state", "match/round flow", "game state machine"),
+               ("conversion", "shop math", "currency exchange")],
+    "infra": [("entitlement", "device/tenant claim", "provisioning API"),
+              ("webhook", "command replay", "device command queue"),
+              ("state", "OTA/update flow", "update state machine"),
+              ("journal", "telemetry integrity", "telemetry pipeline"),
+              ("time", "cert/token TTL", "device auth"),
+              ("boundary", "fleet tenant reads", "fleet-scoped queries")],
+}
+DOMAIN_ALIASES = {"commerce": "e-commerce", "shop": "e-commerce", "payments": "fintech",
+                  "fintech": "fintech", "saas": "saas", "booking": "booking",
+                  "travel": "booking", "social": "social", "gaming": "gaming",
+                  "casino": "gaming", "infra": "infra", "iot": "infra"}
+
+
+def cmd_map(args):
+    """Instant undercroft inventory for a target domain."""
+    d = DOMAIN_ALIASES.get(args.domain.lower(), args.domain.lower())
+    if d not in DOMAIN_MAP:
+        print(f"✗ domain {sorted(DOMAIN_MAP)} (aliases: {sorted(set(DOMAIN_ALIASES))})", file=sys.stderr)
+        return 2
+    print(f"▸ UNDERCROFT MAP — {d} ({len(DOMAIN_MAP[d])} seams)")
+    for i, (cls, seam, where) in enumerate(DOMAIN_MAP[d], 1):
+        print(f"  {i:2d}. [{cls:12s}] {seam}")
+        print(f"      where: {where}")
+        print(f"      plan:  undercroft probe --class {cls}")
+    return 0
+
+
+def cmd_descend(args):
+    """The full loop in one command: scan → map → register → prioritized plan."""
+    st = base(args.target)
+    print(f"═══ UNDERCROFT DESCENT — {args.target} ═══")
+    # 1. scan (if bundle path given)
+    scan_n = 0
+    if args.path:
+        findings = _scan_findings(args.path)
+        code = st.setdefault("code", [])
+        known = {(c.get("asset"), c.get("seam")) for c in code}
+        for x in findings:
+            key = (f"{x['file']}:{x['line']}", x["seam"])
+            if key not in known:
+                code.append({"asset": key[0], "seam": x["seam"], "note": f"scan: {x['desc']}",
+                             "at": datetime.now(timezone.utc).isoformat()})
+        scan_n = len(findings)
+        print(f"[1] scan: {scan_n} seam hits from {args.path}")
+    # 2. domain map → register plan seams
+    d = DOMAIN_ALIASES.get(args.domain.lower(), args.domain.lower())
+    plan = []
+    if d in DOMAIN_MAP:
+        logic = st.setdefault("logic", [])
+        known_logic = {(l.get("seam"), l.get("where")) for l in logic}
+        for cls, seam, where in DOMAIN_MAP[d]:
+            key = (seam, where)
+            if key not in known_logic:
+                logic.append({"seam": seam, "where": where, "status": "PROBED",
+                              "proof": "", "delta": f"plan:{cls}",
+                              "at": datetime.now(timezone.utc).isoformat()})
+            plan.append((cls, seam, where))
+        print(f"[2] map: {d} — {len(plan)} seams registered as PROBED")
+    save(args.target, st)
+    # 3. prioritized plan with probe plans inline
+    value = {"precision": 3, "concurrency": 3, "boundary": 3, "entitlement": 3,
+             "arbitrage": 3, "credits": 2, "webhook": 3, "state": 3, "randomness": 2,
+             "conversion": 2, "journal": 2, "riskless": 2, "bounds": 2, "calculation": 3, "time": 2}
+    ordered = sorted(plan, key=lambda x: -value.get(x[0], 1))
+    print(f"[3] DESCENT PLAN (no-gain, one decisive test each):")
+    for i, (cls, seam, where) in enumerate(ordered, 1):
+        title, steps = PROBES[cls]
+        print(f"\n  {i}. {seam}  [{cls}]  @ {where}")
+        for k, v in steps:
+            print(f"      {k:13s} {v}")
+    print(f"\n═══ run each probe → confirm via logic/craft → export → 3AM promote ═══")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="UNDERCROFT — custom-surface mandate CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -728,6 +852,12 @@ def main():
     en.add_argument("--file", help="one token per line")
     co = sub.add_parser("corpus", help="boundary-input corpus generator")
     co.add_argument("--type", required=True, choices=["money", "int", "string", "json", "date"])
+    mp = sub.add_parser("map", help="instant undercroft inventory for a target domain")
+    mp.add_argument("--domain", required=True, help="e-commerce|fintech|saas|booking|social|gaming|infra (+ aliases)")
+    de = sub.add_parser("descend", help="the full loop: scan → map → register → prioritized plan")
+    de.add_argument("--target", required=True)
+    de.add_argument("--domain", required=True)
+    de.add_argument("--path", help="optional bundle/source path to scan")
     a = ap.parse_args()
     if a.cmd == "code":
         return cmd_code(a)
@@ -759,6 +889,10 @@ def main():
         return cmd_entropy(a)
     if a.cmd == "corpus":
         return cmd_corpus(a)
+    if a.cmd == "map":
+        return cmd_map(a)
+    if a.cmd == "descend":
+        return cmd_descend(a)
     if a.cmd == "report":
         return cmd_report(a)
     if a.cmd == "verify":

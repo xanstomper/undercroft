@@ -1,7 +1,7 @@
 ---
 name: undercroft
 description: "Trigger `undercroft`. The Undercroft Mandate — attack the hidden level beneath any system's documented surface: bespoke code, shadow endpoints, rules/value flows, crafted PoCs."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -181,6 +181,8 @@ re-fired without a change.
 - `craft --target <c> --add "<finding id>" --request "<one decisive test>" --proof "<read-only result>" --class <IDOR|RACE|DESER|FMT|MATH|STATE|TIME|OTHER>` — PoC ledger (feeds family). `craft` takes NO `--delta` flag — put the Δ inside `--proof`; use `--delta` only on `logic`.
 - `export --target <c>` — forge → 3AM: appends (flaw, seam, probe, confirmed_when) JSONL rows to `~/.redteam/learned-vectors.jsonl`; next step `3AM promote --apply --verified`
 - `corpus --type money|int|string|json|date` — boundary-input corpus generator
+- `map --domain <e-commerce|fintech|saas|booking|social|gaming|infra>` — instant seam inventory for any target type (aliases: shop, payments, travel, casino, iot…)
+- `descend --target <c> --domain <d> [--path bundles]` — THE press-button loop: scan → map → register → prioritized descent plan with probe plans inline. One command = the whole engagement skeleton.
 - `scan --path <bundles|source> [--target c] [--limit N]` — static seam scanner (read-only, auto-registers)
 - `stateflow --states "a,b,c,d" [--guard "b:a"] [--flow F] [--target c]` — transition bypass matrix generator
 - `replay --url URL [--method M] [--times N] [--confirm] [--target c]` — idempotency harness
