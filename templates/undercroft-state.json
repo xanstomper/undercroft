@@ -1,0 +1,16 @@
+{
+  "target": "<campaign target>",
+  "created": "<ISO-8601>",
+  "code": [
+    {"asset": "<file|route|component>", "seam": "authn|authz|crypto|injection|trust", "note": "", "at": ""}
+  ],
+  "surface": [
+    {"endpoint": "<endpoint>", "kind": "hidden|misused|legacy|admin", "status": "PROBED|CONFIRMED|EXHAUSTED", "proof": "", "at": ""}
+  ],
+  "logic": [
+    {"seam": "<rule seam>", "where": "<flow>", "status": "PROBED|CONFIRMED|EXHAUSTED", "proof": "", "delta": "", "at": ""}
+  ],
+  "pocs": [
+    {"finding": "<finding id>", "request": "<one decisive test>", "proof": "<read-only result>", "class": "IDOR|RACE|DESER|FMT|MATH|STATE|TIME|OTHER", "at": ""}
+  ]
+}
