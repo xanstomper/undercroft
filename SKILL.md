@@ -1,7 +1,7 @@
 ---
 name: undercroft
 description: "Trigger `undercroft`. The Undercroft Mandate — attack the hidden level beneath any system's documented surface: bespoke code, shadow endpoints, rules/value flows, crafted PoCs."
-version: 2.2.0
+version: 2.3.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -137,6 +137,28 @@ except `replay`, which is gated:
 - **`corpus --type money|int|string|json|date`** — canonical boundary-input corpus
   per type (precision traps, integer edges, type confusion, DST/date edges).
 
+## Braindead Mode (v2.3.0 — one command = the whole engagement)
+
+```bash
+undercroft run --target shop --domain e-commerce \
+  --url https://target.example --bundle ./client-bundle \
+  --boundary-url "https://target.example/api/orders?org_id={id}" --probe-ids "1,2"
+```
+
+`run` executes the ENTIRE engagement, read-only by construction:
+1. **scan** the bundle → seams + auto-JWT decode (alg/claims/expiry flags)
+2. **map** the domain → all expected seams registered
+3. **live route probe** — 60+ GET candidates at 0.2s pacing (burst pauses); live
+   routes CONFIRMED into the surface ledger
+4. **boundary probe** — read-only id swaps on the operator's own ids; accepted
+   reads CONFIRMED into the logic ledger
+5. **auto-craft** — every CONFIRMED finding becomes a PoC ledger entry (class-mapped)
+6. **report** — written automatically; next step printed: `export` → 3AM promote
+
+The operator types one command and reads the report. State-changing probes
+(replay/writes) still require explicit separate `--confirm` — braindead does not
+mean ungated.
+
 ## Working with the family (the relay)
 
 - HolyShit's recon feeds UNDERCROFT's undercroft map (what's bespoke, what's theirs,
@@ -183,6 +205,8 @@ re-fired without a change.
 - `corpus --type money|int|string|json|date` — boundary-input corpus generator
 - `map --domain <e-commerce|fintech|saas|booking|social|gaming|infra>` — instant seam inventory for any target type (aliases: shop, payments, travel, casino, iot…)
 - `descend --target <c> --domain <d> [--path bundles]` — THE press-button loop: scan → map → register → prioritized descent plan with probe plans inline. One command = the whole engagement skeleton.
+- `run --target <c> --domain <d> --url URL [--bundle P] [--cookie k=v] [--boundary-url U] [--probe-ids 1,2]` — BRAINDEAD MODE: the entire engagement auto-executed (read-only) → auto-crafted PoCs → report written. State-changing probes still gated by --confirm separately.
+- `jwt --token X` — JWT inspector: decode, weak-alg/privileged-claim/expiry flags
 - `scan --path <bundles|source> [--target c] [--limit N]` — static seam scanner (read-only, auto-registers)
 - `stateflow --states "a,b,c,d" [--guard "b:a"] [--flow F] [--target c]` — transition bypass matrix generator
 - `replay --url URL [--method M] [--times N] [--confirm] [--target c]` — idempotency harness

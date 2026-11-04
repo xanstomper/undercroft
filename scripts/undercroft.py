@@ -174,7 +174,7 @@ def cmd_verify(args):
     for want in ("code", "surface", "logic", "craft", "probe", "fuzz",
                  "drift", "prioritize", "export", "report", "verify",
                  "scan", "stateflow", "replay", "precision", "entropy", "corpus",
-                 "map", "descend"):
+                 "map", "descend", "run", "jwt"):
         if want not in help_out:
             bad.append(f"subcommand {want}")
     tmpl = Path(__file__).resolve().parent.parent / "templates" / "undercroft-state.json"
@@ -780,6 +780,169 @@ def cmd_descend(args):
     return 0
 
 
+# ── v2.3.0 braindead mode: the auto-engagement ────────────────────────────────
+
+def _live_get(url, headers=None, timeout=5):
+    """GET-only live probe. Returns (status, body_bytes) — read-only by construction."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, method="GET", headers=headers or
+                                 {"User-Agent": "undercroft/2.3"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except Exception:
+        return None, b""
+
+
+def cmd_jwt(args):
+    """JWT inspector: decode (no verification), flag weak alg/admin claims/expiry."""
+    import base64
+    import json as _json
+    tok = args.token.strip()
+    parts = tok.split(".")
+    if len(parts) != 3:
+        print("✗ not a JWT (need 3 dot-separated parts)", file=sys.stderr)
+        return 2
+    def b64d(s):
+        return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    try:
+        header = _json.loads(b64d(parts[0]))
+        payload = _json.loads(b64d(parts[1]))
+    except Exception as e:
+        print(f"✗ decode failed: {e}", file=sys.stderr)
+        return 2
+    print(f"▸ JWT header: {header}")
+    print(f"▸ JWT payload ({len(payload)} claims):")
+    for k, v in payload.items():
+        print(f"    {k}: {v}")
+    alg = str(header.get("alg", "?"))
+    if alg.lower() == "none":
+        print("  ! alg=none — unsigned token accepted by the target?")
+    elif alg.startswith("HS"):
+        print(f"  ! {alg} — symmetric MAC: forgeable if the secret leaks")
+    for k, v in payload.items():
+        if k.lower() in ("role", "admin", "is_admin", "scope") and str(v).lower() not in ("user", "false", "0"):
+            print(f"  ! privileged claim: {k}={v}")
+    if "exp" in payload:
+        import datetime as _dt
+        exp = _dt.datetime.fromtimestamp(payload["exp"], tz=_dt.timezone.utc)
+        stale = exp < _dt.datetime.now(_dt.timezone.utc)
+        print(f"  exp: {exp.isoformat()}" + ("  ! EXPIRED" if stale else " (valid)"))
+    return 0
+
+
+def cmd_run(args):
+    """BRAINDEAD MODE: the whole engagement against a live target, read-only.
+    scan → map → live route probe (GET) → boundary probe → auto-craft → report."""
+    import hashlib
+    import time as _time
+    st = base(args.target)
+    print(f"═══ UNDERCROFT RUN — {args.target} ({args.domain}) ═══")
+    # [1] descend core: scan + map + register (reuse v2.2 pieces)
+    if args.bundle:
+        findings = _scan_findings(args.bundle)
+        code = st.setdefault("code", [])
+        known = {(c.get("asset"), c.get("seam")) for c in code}
+        for x in findings:
+            key = (f"{x['file']}:{x['line']}", x["seam"])
+            if key not in known:
+                code.append({"asset": key[0], "seam": x["seam"], "note": f"scan: {x['desc']}",
+                             "at": datetime.now(timezone.utc).isoformat()})
+        print(f"[1] scan: {len(findings)} seam hits")
+        for x in findings[:6]:
+            print(f"      {x['seam']:10s} {x['file']}:{x['line']} {x['desc']}")
+        # jwt inspection for any token found
+        import re as _re
+        for m in _re.finditer(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*",
+                              " ".join(x["match"] for x in findings)):
+            print(f"      jwt → decode:")
+            args.token = m.group(0)
+            cmd_jwt(args)
+    d = DOMAIN_ALIASES.get(str(args.domain).lower(), str(args.domain).lower())
+    plan = DOMAIN_MAP.get(d, [])
+    logic = st.setdefault("logic", [])
+    known_logic = {(str(l.get("seam") or ""), str(l.get("where") or "")) for l in logic}
+    for cls, seam, where in plan:
+        if (seam, where) not in known_logic:
+            logic.append({"seam": seam, "where": where, "status": "PROBED",
+                          "proof": "", "delta": f"plan:{cls}",
+                          "at": datetime.now(timezone.utc).isoformat()})
+    print(f"[2] map: {d} — {len(plan)} seams registered")
+    # [3] live route probe (GET-only, polite pacing)
+    live_hits = []
+    if args.url:
+        base_url = args.url.rstrip("/")
+        hdrs = {"User-Agent": "undercroft/2.3"}
+        if args.cookie:
+            hdrs["Cookie"] = args.cookie
+        for h in args.header or []:
+            k, _, v = h.partition(":")
+            hdrs[k.strip()] = v.strip()
+        cands = [f"{base_url}/{w}" for w in ROUTE_WORDS] + \
+                [f"{base_url}/api/{w}" for w in ROUTE_WORDS]
+        cands = cands[:args.max_routes]
+        print(f"[3] live route probe: {len(cands)} GET candidates (0.2s pacing)")
+        burst = 0
+        for c in cands:
+            code_, body = _live_get(c, hdrs)
+            burst += 1
+            if burst % 25 == 0:
+                _time.sleep(1)  # noise-budget pause per burst
+            else:
+                _time.sleep(0.2)
+            if code_ in (200, 301, 403):
+                live_hits.append((c, code_, len(body)))
+                print(f"    LIVE {code_}  {c}  ({len(body)}B)")
+        surface = st.setdefault("surface", [])
+        known_s = {s.get("endpoint") for s in surface}
+        for c, code_, size in live_hits:
+            if c not in known_s:
+                surface.append({"endpoint": c, "kind": "hidden", "status": "CONFIRMED",
+                                "proof": f"live GET {code_} ({size}B)", "at": datetime.now(timezone.utc).isoformat()})
+        print(f"    → {len(live_hits)} live route(s) CONFIRMED into surface ledger")
+        # [4] boundary probe (read-only id swap on operator-supplied own ids)
+        if args.boundary_url and args.probe_ids:
+            print(f"[4] boundary probe: {args.boundary_url} ids={args.probe_ids}")
+            for pid in args.probe_ids.split(","):
+                u = args.boundary_url.replace("{id}", pid.strip())
+                code_, body = _live_get(u, hdrs)
+                ok = code_ == 200
+                print(f"    id={pid.strip()}: {code_}" + ("  ← ACCEPTED" if ok else ""))
+                if ok:
+                    logic.append({"seam": f"boundary read (id={pid.strip()})",
+                                  "where": args.boundary_url, "status": "CONFIRMED",
+                                  "proof": f"GET {u} → 200 ({len(body)}B)",
+                                  "delta": "read-only id swap",
+                                  "at": datetime.now(timezone.utc).isoformat()})
+    save(args.target, st)
+    # [5] auto-craft CONFIRMED seams → PoC ledger
+    pocs = st.setdefault("pocs", [])
+    known_p = {p.get("finding") for p in pocs}
+    crafted = 0
+    seam_class = {"boundary": "IDOR", "concurrency": "RACE", "webhook": "STATE",
+                  "state": "STATE", "precision": "MATH", "conversion": "MATH",
+                  "time": "TIME", "journal": "OTHER", "entitlement": "IDOR"}
+    for l in logic:
+        if l.get("status") == "CONFIRMED" and l.get("seam") not in known_p:
+            cls = seam_class.get(l.get("seam", "").split()[0], "OTHER")
+            pocs.append({"finding": l["seam"], "request": f"GET/verify {l.get('where', '')}",
+                         "proof": l.get("proof", ""), "class": cls,
+                         "at": datetime.now(timezone.utc).isoformat()})
+            crafted += 1
+    save(args.target, st)
+    print(f"[5] auto-craft: {crafted} CONFIRMED finding(s) → PoC ledger")
+    # [6] report
+    rep = Path(f"{args.target}-undercroft-report.md")
+    args.output = str(rep)
+    cmd_report(args)
+    print(f"[6] report: {rep}")
+    print("═══ next: undercroft export --target " + args.target + "  →  3AM promote ═══")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="UNDERCROFT — custom-surface mandate CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -858,6 +1021,18 @@ def main():
     de.add_argument("--target", required=True)
     de.add_argument("--domain", required=True)
     de.add_argument("--path", help="optional bundle/source path to scan")
+    rn = sub.add_parser("run", help="BRAINDEAD MODE: full auto-engagement (read-only) → report")
+    rn.add_argument("--target", required=True)
+    rn.add_argument("--domain", required=True)
+    rn.add_argument("--url", help="live target base URL (GET-only probing)")
+    rn.add_argument("--bundle", help="optional bundle/source path to scan")
+    rn.add_argument("--cookie", help="own session cookie 'k=v' for authenticated read probes")
+    rn.add_argument("--header", action="append", help="'K: V', repeatable")
+    rn.add_argument("--boundary-url", help="URL template with {id} for read-only boundary probe")
+    rn.add_argument("--probe-ids", help="comma own-ids to swap into boundary-url")
+    rn.add_argument("--max-routes", type=int, default=60)
+    jt = sub.add_parser("jwt", help="JWT inspector: decode + weak-alg/claim/expiry flags")
+    jt.add_argument("--token", required=True)
     a = ap.parse_args()
     if a.cmd == "code":
         return cmd_code(a)
@@ -893,6 +1068,10 @@ def main():
         return cmd_map(a)
     if a.cmd == "descend":
         return cmd_descend(a)
+    if a.cmd == "run":
+        return cmd_run(a)
+    if a.cmd == "jwt":
+        return cmd_jwt(a)
     if a.cmd == "report":
         return cmd_report(a)
     if a.cmd == "verify":
