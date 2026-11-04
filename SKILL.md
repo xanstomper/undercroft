@@ -229,6 +229,8 @@ State: `~/.redteam/campaigns/<target>/undercroft-state.json`.
 - `holyshit-mode` — recon + recipe canon; feeds the undercroft map.
 - `3am-shinjitsu` — parallel sweep; BLOCKED verdicts hand UNDERCROFT the walls;
   UNDERCROFT's crafted vectors grow 3AM's matrix via learn→promote.
-- `kairo` — takes over when the seam is physical.
+- `kairo` — THE SYNTHESIZER (v2.0.0): ingests undercroft's CONFIRMED seams and
+  compiles them into attacks for every consumer (3AM rows, craft entries, recipe
+  cards) — `kairo ingest→synthesize→distribute` arms the family from our findings.
 - Family doctrine: every mandate attacks, the tree covers anything that exists.
   HolyShit (known) · 3AM (knowable) · UNDERCROFT (unknown/crafted) · KAIRO (metal).
