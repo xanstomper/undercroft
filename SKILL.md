@@ -226,7 +226,7 @@ State: `~/.redteam/campaigns/<target>/undercroft-state.json`.
 
 ## Relations
 
-- `spydermonkey` — THE DISPATCHER (v1.0.0): the family's front door — any agent loads it first, states the goal, and the router sends the right mandate(s); `spydermonkey run` = the full pipeline, `spydermonkey verify` checks all six engines. The web's center.
+- `spydermonkey` — THE DISPATCHER (v1.2.0): the family's front door — any agent loads it first, states the goal, and the router sends the right mandate(s); `spydermonkey run` = the full pipeline, `spydermonkey verify` checks all seven engines. The web's center.
 
 
 - `barbican` — THE FIRST LAYER (v1.1.0): operator-protection synthesizer — vantage, identity, artifacts, trail, timeline, cleanup. Runs BEFORE every engagement; 3AM's pacing inherits its timeline layer; zero-document gate enforced by it.
@@ -239,4 +239,5 @@ State: `~/.redteam/campaigns/<target>/undercroft-state.json`.
   compiles them into attacks for every consumer (3AM rows, craft entries, recipe
   cards) — `kairo ingest→synthesize→distribute` arms the family from our findings.
 - Family doctrine: every mandate attacks, the tree covers anything that exists.
-  HolyShit (known) · 3AM (knowable) · UNDERCROFT (unknown/crafted) · KAIRO (metal).
+  HolyShit (known) · 3AM (knowable) · UNDERCROFT (unknown/crafted) · KAIRO (metal) ·
+  SHUKAKU (harvest — prices what our confirmations make reachable).

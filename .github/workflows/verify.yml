@@ -1,0 +1,34 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile
+        run: python3 -m py_compile scripts/undercroft.py
+
+      - name: CLI smoke tests
+        run: |
+          set -e
+          S=scripts/undercroft.py
+          python3 $S --help > /dev/null
+          python3 $S verify | grep -q 'ALL PASS'
+          python3 $S probe | grep -q 'precision'
+          python3 $S probe | grep -q 'confirmed_when'
+          python3 $S map --domain fintech | grep -q '.'
+          for c in run descend craft export replay precision entropy stateflow verify; do
+            python3 $S --help | grep -q "$c"
+          done
+          test -f templates/undercroft-state.json
+          test -f references/undercroft-playbook.md
+
+      - name: Stdlib-only check
+        run: |
+          ! grep -E '^[[:space:]]*(import|from)[[:space:]]+(requests|flask|httpx|aiohttp|urllib3)' scripts/undercroft.py
