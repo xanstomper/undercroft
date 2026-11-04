@@ -1,7 +1,7 @@
 ---
 name: undercroft
 description: "Trigger `undercroft`. The Undercroft Mandate — attack the hidden level beneath any system's documented surface: bespoke code, shadow endpoints, rules/value flows, crafted PoCs."
-version: 2.0.0
+version: 2.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -111,6 +111,32 @@ RACE→5/B, DESER→3/C, FMT→9/C, MATH→10/C, STATE→5/B, TIME→1/C) and ap
 rows 3AM's `learn`/`promote` pipeline consumes directly — one command closes the
 family loop.
 
+## The Descent Kit (v2.1.0 — the engine, not just the ledger)
+
+Six real tools that find and prove the seams automatically — all local/read-only
+except `replay`, which is gated:
+
+- **`scan --path <bundles|source> [--target c]`** — static seam scanner: 12 pattern
+  classes over client bundles/source (hardcoded secrets/JWTs, client-side auth
+  state, HTML/eval sinks, SQL concat, org/tenant ids in client calls, open
+  redirects, wildcard postMessage, own-crypto usage) → findings registered into
+  the code ledger with file:line.
+- **`stateflow --states "a,b,c,d" [--guard "b:a,c:b"]`** — generates the complete
+  out-of-order transition bypass matrix for any declared flow and flags every
+  GUARD BYPASS candidate; registers the probe list into the logic ledger.
+- **`replay --url --method [--times N] [--confirm]`** — idempotency harness: fires
+  the same request N× and diffs responses; distinct responses = IDEMPOTENCY GAP,
+  auto-registered CONFIRMED. State-changing methods REQUIRE --confirm (own
+  endpoints only).
+- **`precision --price X --rate Y [--ops N] [--mode floor|trunc|round]`** — drift
+  calculator: exact decimal vs float math over N operations → total drift + the
+  worst per-op crafted amount.
+- **`entropy --samples "..."|--file F`** — token/OTP estimator: uniqueness,
+  alphabet size, Shannon bits/char, effective bits/token, counter/pattern
+  suspicion, duplicate reuse, brute-force windows. Observation-only.
+- **`corpus --type money|int|string|json|date`** — canonical boundary-input corpus
+  per type (precision traps, integer edges, type confusion, DST/date edges).
+
 ## Working with the family (the relay)
 
 - HolyShit's recon feeds UNDERCROFT's undercroft map (what's bespoke, what's theirs,
@@ -154,6 +180,12 @@ re-fired without a change.
 - `prioritize --target <c>` — attack order across seams (value × status)
 - `craft --target <c> --add "<finding id>" --request "<one decisive test>" --proof "<read-only result>" --class <IDOR|RACE|DESER|FMT|MATH|STATE|TIME|OTHER>` — PoC ledger (feeds family). `craft` takes NO `--delta` flag — put the Δ inside `--proof`; use `--delta` only on `logic`.
 - `export --target <c>` — forge → 3AM: appends (flaw, seam, probe, confirmed_when) JSONL rows to `~/.redteam/learned-vectors.jsonl`; next step `3AM promote --apply --verified`
+- `corpus --type money|int|string|json|date` — boundary-input corpus generator
+- `scan --path <bundles|source> [--target c] [--limit N]` — static seam scanner (read-only, auto-registers)
+- `stateflow --states "a,b,c,d" [--guard "b:a"] [--flow F] [--target c]` — transition bypass matrix generator
+- `replay --url URL [--method M] [--times N] [--confirm] [--target c]` — idempotency harness
+- `precision --price X --rate Y [--ops N] [--mode M]` — drift calculator
+- `entropy --samples "..."|--file F` — token/OTP entropy estimator
 - `report --target <c> [--output F]` — undercroft report (seams, proofs, PoC ledger)
 - `verify` — self-check
 

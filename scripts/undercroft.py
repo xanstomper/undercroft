@@ -172,7 +172,8 @@ def cmd_verify(args):
     help_out = subprocess.run([sys.executable, str(self), "--help"],
                               capture_output=True, text=True).stdout
     for want in ("code", "surface", "logic", "craft", "probe", "fuzz",
-                 "drift", "prioritize", "export", "report", "verify"):
+                 "drift", "prioritize", "export", "report", "verify",
+                 "scan", "stateflow", "replay", "precision", "entropy", "corpus"):
         if want not in help_out:
             bad.append(f"subcommand {want}")
     tmpl = Path(__file__).resolve().parent.parent / "templates" / "undercroft-state.json"
@@ -408,6 +409,253 @@ def cmd_export(args):
     return 0
 
 
+# ── v2.1.0 descent kit ────────────────────────────────────────────────────────
+
+SCAN_PATTERNS = [
+    ("trust", "client-side auth/role state", r"(localStorage|sessionStorage)[.\[]\s*['\"]?[^'\"]*(token|jwt|auth|admin|role|perm)"),
+    ("trust", "admin/role flag in client state", r"(isAdmin|is_admin|admin['\"]?\s*[:=]\s*(true|1|yes)|role['\"]?\s*[:=]\s*['\"]admin)"),
+    ("injection", "HTML sink (XSS)", r"(innerHTML|outerHTML|document\.write|dangerouslySetInnerHTML)\s*[=(]"),
+    ("injection", "dynamic code execution", r"\beval\s*\(|new\s+Function\s*\(|setTimeout\s*\(\s*['\"]"),
+    ("crypto", "hardcoded secret/credential", r"(?i)(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}['\"]"),
+    ("crypto", "hardcoded JWT", r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}"),
+    ("authz", "org/tenant id in client calls (boundary candidates)", r"(?i)(org[_-]?id|tenant[_-]?id|workspace[_-]?id|account[_-]?id)\s*[:=]"),
+    ("trust", "client-assigned value fields", r"(?i)\.(price|total|amount|balance|quantity|discount)\s*=\s*"),
+    ("injection", "SQL by concat", r'''(?i)(SELECT|INSERT|UPDATE|DELETE)[^;'"]*['"]\s*\+|\.query\s*\([^)]*\+'''),
+    ("trust", "open redirect sink", r"(window\.location\s*=|location\.href\s*=|location\.replace\s*\()"),
+    ("trust", "postMessage wildcard target", r"postMessage\s*\([^)]*,\s*['\"]\*['\"]"),
+    ("crypto", "weak/own crypto usage", r"(?i)\b(md5|sha1|des|ecb|createCipher)\b"),
+]
+SOURCE_EXTS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".py", ".php", ".rb", ".go", ".json", ".html"}
+
+
+def _iter_sources(path):
+    p = Path(path).expanduser()
+    if p.is_file():
+        yield p
+        return
+    for f in sorted(p.rglob("*")):
+        if f.is_file() and f.suffix.lower() in SOURCE_EXTS and f.stat().st_size < 5_000_000:
+            yield f
+
+
+def cmd_scan(args):
+    """Static seam scanner: bundles/source → undercroft seams (read-only, local)."""
+    import re as _re
+    compiled = [(seam, desc, _re.compile(rx)) for seam, desc, rx in SCAN_PATTERNS]
+    findings = []
+    for f in _iter_sources(args.path):
+        try:
+            text = f.read_text(errors="replace")
+        except Exception:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for seam, desc, rx in compiled:
+                m = rx.search(line)
+                if m:
+                    findings.append({"file": str(f), "line": lineno, "seam": seam,
+                                     "desc": desc, "match": line.strip()[:110],
+                                     "at": datetime.now(timezone.utc).isoformat()})
+    by_seam = {}
+    for x in findings:
+        by_seam.setdefault(x["seam"], []).append(x)
+    print(f"▸ scan: {args.path} — {len(findings)} seam hits")
+    for seam in sorted(by_seam):
+        print(f"  [{seam}] ×{len(by_seam[seam])}")
+        for x in by_seam[seam][:args.limit]:
+            print(f"    {x['file']}:{x['line']}  {x['desc']}")
+            print(f"      └ {x['match'][:100]}")
+    if args.target:
+        st = base(args.target)
+        code = st.setdefault("code", [])
+        known = {(c.get("asset"), c.get("seam")) for c in code}
+        for x in findings:
+            key = (f"{x['file']}:{x['line']}", x["seam"])
+            if key not in known:
+                code.append({"asset": key[0], "seam": x["seam"],
+                             "note": f"scan: {x['desc']}",
+                             "at": datetime.now(timezone.utc).isoformat()})
+        save(args.target, st)
+        print(f"▸ registered into {args.target} code ledger")
+    return 0
+
+
+def cmd_stateflow(args):
+    """Out-of-order transition bypass matrix for a declared flow."""
+    states = [s.strip() for s in args.states.split(",") if s.strip()]
+    if len(states) < 3:
+        print("✗ need ≥3 states", file=sys.stderr)
+        return 2
+    guards = {}
+    for g in (args.guard or "").split(","):
+        if ":" in g:
+            dst, pre = g.split(":", 1)
+            guards[dst.strip()] = pre.strip()
+    print(f"▸ stateflow: {' → '.join(states)}")
+    print(f"  guards: {guards or 'none declared'}")
+    n = 0
+    for i, dst in enumerate(states):
+        if i == 0:
+            continue
+        for j, cur in enumerate(states):
+            if j >= i:
+                continue
+            n += 1
+            skipped = states[j + 1:i]
+            note = f" (skips: {', '.join(skipped)})" if skipped else ""
+            print(f"  {n:2d}. fire '{dst}' while at '{cur}'{note}")
+            if dst in guards and guards[dst] in skipped:
+                print(f"      └ GUARD BYPASS candidate: '{dst}' declares guard '{guards[dst]}'")
+    if args.target:
+        st = base(args.target)
+        st.setdefault("logic", []).append({
+            "seam": f"stateflow {'→'.join(states)}", "where": args.flow or "declared flow",
+            "status": "PROBED", "proof": "", "delta": f"{n} out-of-order probes",
+            "at": datetime.now(timezone.utc).isoformat()})
+        save(args.target, st)
+        print(f"▸ registered {n}-probe matrix into {args.target} logic ledger")
+    return 0
+
+
+def cmd_replay(args):
+    """Idempotency/replay harness: same request N times, diff responses."""
+    import hashlib
+    import urllib.error
+    import urllib.request
+    if args.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and not args.confirm:
+        print("✗ state-changing replay needs --confirm (own endpoints only)", file=sys.stderr)
+        return 2
+    req_headers = {"User-Agent": "undercroft/2.1"}
+    for h in args.header or []:
+        k, _, v = h.partition(":")
+        req_headers[k.strip()] = v.strip()
+    body = args.body.encode() if args.body else None
+    if body and args.method.upper() in ("POST", "PUT", "PATCH"):
+        req_headers.setdefault("Content-Type", "application/json")
+    seen, results = {}, []
+    for i in range(1, args.times + 1):
+        r = urllib.request.Request(args.url, data=body, method=args.method.upper(),
+                                   headers=req_headers)
+        try:
+            with urllib.request.urlopen(r, timeout=args.timeout) as resp:
+                payload, code = resp.read(), resp.status
+        except urllib.error.HTTPError as e:
+            payload, code = e.read(), e.code
+        except Exception as e:
+            print(f"  {i}: transport error — {e}")
+            continue
+        h = hashlib.sha256(payload).hexdigest()[:12]
+        results.append((i, code, h, len(payload)))
+        seen.setdefault(h, []).append(i)
+    for i, code, h, size in results:
+        print(f"  {i}: {code} · {h} · {size}B")
+    distinct = len({h for _, _, h, _ in results})
+    print(f"▸ {len(results)} replays → {distinct} distinct response(s)")
+    if distinct > 1:
+        print("  ! IDEMPOTENCY GAP — identical request produced different effects")
+        if args.target:
+            st = base(args.target)
+            st.setdefault("logic", []).append({
+                "seam": "idempotency/replay", "where": args.url, "status": "CONFIRMED",
+                "proof": f"{distinct} distinct responses over {len(results)} replays",
+                "delta": f"{args.method} ×{args.times}", "at": datetime.now(timezone.utc).isoformat()})
+            save(args.target, st)
+            print(f"▸ registered CONFIRMED into {args.target} logic ledger")
+    return 0
+
+
+def cmd_precision(args):
+    """Drift calculator: float math vs exact decimal → worst crafted amount."""
+    from decimal import Decimal, ROUND_FLOOR, ROUND_DOWN, ROUND_HALF_UP
+    modes = {"floor": ROUND_FLOOR, "trunc": ROUND_DOWN, "round": ROUND_HALF_UP}
+    rnd = modes.get(args.mode, ROUND_HALF_UP)
+    price, rate, ops = Decimal(str(args.price)), Decimal(str(args.rate)), args.ops
+    exact_total = Decimal(0)
+    float_total = 0.0
+    worst = None
+    for i in range(ops):
+        amt = price * (Decimal(1) + Decimal(i) / Decimal(10 ** 6))
+        fee_exact = (amt * rate).quantize(Decimal("0.01"), rounding=rnd)
+        exact_total += fee_exact
+        f = float(amt) * float(rate)
+        fee_float = float(Decimal(str(round(f, 2)) if rnd == ROUND_HALF_UP else
+                                  (str(int(f * 100) / 100) if rnd != ROUND_FLOOR else
+                                   str((Decimal(str(f)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR))))))
+        float_total += fee_float
+        d = abs(Decimal(str(fee_float)) - fee_exact)
+        if worst is None or d > worst[1]:
+            worst = (str(amt.quantize(Decimal("0.000001")).normalize()), d)
+    print(f"▸ precision: price={price} rate={rate} mode={args.mode} ops={ops}")
+    print(f"  exact total:    {exact_total}")
+    print(f"  float total:    {float_total}")
+    drift = abs(Decimal(str(float_total)) - exact_total)
+    print(f"  total drift:    {drift}  (per-op worst: {worst[1]} at amount {worst[0]})")
+    if drift > 0:
+        print(f"  → crafted-input candidates: {worst[0]} class amounts; drift grows linearly with ops")
+    return 0
+
+
+def cmd_entropy(args):
+    """Token/OTP entropy estimator: samples → effective bits + patterns."""
+    from collections import Counter
+    from math import log2
+    if args.samples:
+        samples = args.samples.split()
+    elif args.file:
+        samples = [l.strip() for l in Path(args.file).read_text().splitlines() if l.strip()]
+    else:
+        print("✗ need --samples or --file", file=sys.stderr)
+        return 2
+    if len(samples) < 5:
+        print("✗ need ≥5 samples", file=sys.stderr)
+        return 2
+    uniq = len(set(samples))
+    lengths = Counter(len(s) for s in samples)
+    alphabets = Counter(ch for s in samples for ch in s)
+    total_chars = sum(alphabets.values())
+    shannon = -sum((c / total_chars) * log2(c / total_chars) for c in alphabets.values())
+    prefixes = Counter(s[:3] for s in samples)
+    top_prefix, top_n = prefixes.most_common(1)[0]
+    print(f"▸ entropy: {len(samples)} samples, {uniq} unique ({100 * uniq / len(samples):.0f}%)")
+    print(f"  lengths: {dict(sorted(lengths.items()))}")
+    print(f"  alphabet size: {len(alphabets)} · Shannon/char: {shannon:.2f} bits")
+    print(f"  common 3-char prefix: '{top_prefix}' on {top_n}/{len(samples)} samples")
+    bits = shannon * (sum(lengths.values()) / len(samples))
+    print(f"  effective entropy ≈ {bits:.1f} bits/token")
+    if uniq < len(samples):
+        print("  ! DUPLICATES present — reuse detected")
+    if top_n / len(samples) > 0.2:
+        print(f"  ! COUNTER/PATTERN suspicion — {top_n}/{len(samples)} share prefix '{top_prefix}'")
+    if len(alphabets) <= 16:
+        print(f"  ! SMALL ALPHABET ({len(alphabets)} chars) — brute-forceable window")
+    return 0
+
+
+def cmd_corpus(args):
+    """Boundary-input corpus generator per type."""
+    corpora = {
+        "money": ["0", "0.005", "0.015", "0.1", "0.3", "1e-8", "9007199254.099", "1e308",
+                  "-0.01", "-1", "0.1+0.2", "99999999999999999999", "0x10", "1_000",
+                  "1.0000000000000001", "%2e2e", "１２３ (fullwidth)"],
+        "int": ["-1", "0", "1", "2147483647", "2147483648", "-2147483648", "9223372036854775807",
+                "9223372036854775808", "0x41", "0b101", "1e5", "1_000", "007", " 7", "7 "],
+        "string": ["", " ", "%00", "\x00", "A" * 5000, "../../etc/passwd", "%c0%af",
+                   "‮unicode bidi", "𝕏𝕐𝕏 unicode", "f'%s' format", "${jndi:x}", "null", "undefined"],
+        "json": ['{"a":1}', '{"a":[1,2]}', '[{"a":{"b":[{}]}}]', '{"a":null}', '{"a":"1"}',
+                 '{"a":1e400}', '{"a":-0}', '{"a":[]}', '"string"', '[]', 'null',
+                 '{"__proto__":{"isAdmin":true}}', '{"a":{"length":1e9}}'],
+        "date": ["1970-01-01", "1970-01-01T00:00:00Z", "9999-12-31", "2024-02-29", "2023-02-29",
+                 "2024-03-10T02:30:00 (DST gap)", "2024-11-03T01:30:00 (DST overlap)",
+                 "-0001-01-01", "now", "+10000-01-01"],
+    }
+    if args.type not in corpora:
+        print(f"✗ type {list(corpora)}", file=sys.stderr)
+        return 2
+    print(f"▸ corpus: {args.type} ({len(corpora[args.type])} inputs)")
+    for x in corpora[args.type]:
+        print(f"  {x}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="UNDERCROFT — custom-surface mandate CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -452,6 +700,34 @@ def main():
     pi.add_argument("--target", required=True)
     ex = sub.add_parser("export", help="forge → 3AM learned-vectors.jsonl")
     ex.add_argument("--target", required=True)
+    sc = sub.add_parser("scan", help="static seam scanner: bundles/source → seams (read-only)")
+    sc.add_argument("--path", required=True, help="file or dir of client bundles/source")
+    sc.add_argument("--target", help="register findings into campaign code ledger")
+    sc.add_argument("--limit", type=int, default=4, help="examples per seam class")
+    sf = sub.add_parser("stateflow", help="out-of-order transition bypass matrix")
+    sf.add_argument("--states", required=True, help="comma list in canonical order")
+    sf.add_argument("--guard", help="comma guards, format 'state:prerequisite'")
+    sf.add_argument("--flow", help="flow name for the ledger")
+    sf.add_argument("--target", help="register matrix into campaign logic ledger")
+    rp = sub.add_parser("replay", help="idempotency/replay harness (same request N×)")
+    rp.add_argument("--url", required=True)
+    rp.add_argument("--method", default="GET")
+    rp.add_argument("--header", action="append", help="'K: V', repeatable")
+    rp.add_argument("--body", help="request body (json)")
+    rp.add_argument("--times", type=int, default=5)
+    rp.add_argument("--timeout", type=int, default=5)
+    rp.add_argument("--confirm", action="store_true", help="required for state-changing methods")
+    rp.add_argument("--target", help="auto-register idempotency gap")
+    pc = sub.add_parser("precision", help="drift calculator: float vs decimal, worst crafted amount")
+    pc.add_argument("--price", type=float, required=True)
+    pc.add_argument("--rate", type=float, required=True)
+    pc.add_argument("--ops", type=int, default=1000)
+    pc.add_argument("--mode", choices=["floor", "trunc", "round"], default="round")
+    en = sub.add_parser("entropy", help="token/OTP entropy estimator (observation-only)")
+    en.add_argument("--samples", help="space-separated tokens")
+    en.add_argument("--file", help="one token per line")
+    co = sub.add_parser("corpus", help="boundary-input corpus generator")
+    co.add_argument("--type", required=True, choices=["money", "int", "string", "json", "date"])
     a = ap.parse_args()
     if a.cmd == "code":
         return cmd_code(a)
@@ -471,6 +747,18 @@ def main():
         return cmd_prioritize(a)
     if a.cmd == "export":
         return cmd_export(a)
+    if a.cmd == "scan":
+        return cmd_scan(a)
+    if a.cmd == "stateflow":
+        return cmd_stateflow(a)
+    if a.cmd == "replay":
+        return cmd_replay(a)
+    if a.cmd == "precision":
+        return cmd_precision(a)
+    if a.cmd == "entropy":
+        return cmd_entropy(a)
+    if a.cmd == "corpus":
+        return cmd_corpus(a)
     if a.cmd == "report":
         return cmd_report(a)
     if a.cmd == "verify":
