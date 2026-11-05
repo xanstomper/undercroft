@@ -55,7 +55,7 @@ Run the trigger sequence ONCE, then collect P0 via the agent's question feature:
 
 ```text
 ▸ UNDERCROFT — DESCENT BEGUN
-  ═══════════════════════════════════
+
   [ OK ] documented surface mapped
   [ OK ] undercroft seams catalogued
   [ OK ] forge ready (PoC ledger)
